@@ -166,9 +166,13 @@ class HistoryBot:
             return []
     
     def format_message_for_display(self, msg: Dict[str, Any]) -> str:
-        """Format a stored message for display"""
-        timestamp = datetime.fromisoformat(msg["timestamp"]).strftime("%Y-%m-%d %H:%M")
-        return f"**{msg['author']}** ({timestamp}): {msg['content']}"
+        """Format a stored message for display with clear date/time and @username"""
+        timestamp = datetime.fromisoformat(msg["timestamp"]).strftime("%Y-%m-%d **[%H:%M]**")
+        # Use @username and bold for clarity
+        author_display = f"<@{msg['author']}>", if you want to ping, or just @username
+        author_display = f"**@{msg['author']}**"
+        # Format: @username [YYYY-MM-DD [HH:MM]]: message
+        return f"{author_display}  _(on {timestamp})_:\n> {msg['content']}"
     
     def setup_events(self):
         """Setup Discord event handlers"""
@@ -312,10 +316,10 @@ class HistoryBot:
 🤖 **HistoryBot Commands:**
 
 **!ask <prompt>** - Ask me anything using GPT-3.5-Turbo
-Example: `!ask What's the weather like today?`
+Example: `!ask Do you think Jordan has good vocabulary?`
 
 **!recall <query>** - Search through stored messages using natural language
-Example: `!recall the time Kevin talked about Sion skin`
+Example: `!recall the time Kevin crashed out on losing his 50/50 at hard pity`
 
 **!help** - Show this help message
 
