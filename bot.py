@@ -238,34 +238,37 @@ class HistoryBot:
                 await message.channel.send("Please provide a prompt after !ask")
                 return
 
-            # Fetch recent chat history from the channel
-            recent_msgs = self.get_recent_channel_messages(str(message.channel.id), limit=10)
-            chat_history = "\n".join([
-                f"{author}: {content}" for author, content, _ in recent_msgs
-            ])
+            # Show typing indicator
+            async with message.channel.typing():
+                # Fetch recent chat history from the channel
+                recent_msgs = self.get_recent_channel_messages(str(message.channel.id), limit=10)
+                chat_history = "\n".join([
+                    f"{author}: {content}" for author, content, _ in recent_msgs
+                ])
 
-            # Fetch previous ask Q&A for this user
-            ask_history = self.get_user_ask_history(str(message.author.id), limit=3)
-            ask_history_str = "\n".join([
-                f"Q: {q}\nA: {a}" for q, a, _ in ask_history
-            ])
+                # Fetch previous ask Q&A for this user
+                ask_history = self.get_user_ask_history(str(message.author.id), limit=3)
+                ask_history_str = "\n".join([
+                    f"Q: {q}\nA: {a}" for q, a, _ in ask_history
+                ])
 
-            # Build the system/context prompt
-            system_prompt = "You are a helpful assistant. Here is the recent chat history and previous questions and answers. Use this context to answer the user's new question."
-            full_prompt = (
-                f"{system_prompt}\n\n"
-                f"Recent chat history:\n{chat_history}\n\n"
-                f"Previous Q&A:\n{ask_history_str}\n\n"
-                f"New question: {prompt}"
-            )
+                # Build the system/context prompt
+                system_prompt = "You are a helpful assistant. Here is the recent chat history and previous questions and answers. Use this context to answer the user's new question."
+                full_prompt = (
+                    f"{system_prompt}\n\n"
+                    f"Recent chat history:\n{chat_history}\n\n"
+                    f"Previous Q&A:\n{ask_history_str}\n\n"
+                    f"New question: {prompt}"
+                )
 
-            # Call OpenAI Chat API
-            response = openai.chat.completions.create(
-                model=CHAT_MODEL,
-                messages=[{"role": "user", "content": full_prompt}]
-            )
+                # Call OpenAI Chat API
+                response = openai.chat.completions.create(
+                    model=CHAT_MODEL,
+                    messages=[{"role": "user", "content": full_prompt}]
+                )
 
-            answer = response.choices[0].message.content.strip()
+                answer = response.choices[0].message.content.strip()
+
             await message.channel.send(answer)
 
             # Store the Q&A in ask_history
@@ -284,8 +287,10 @@ class HistoryBot:
 
             await message.channel.send(f"🔍 Searching for messages related to: *{query}*")
 
-            # Search for relevant messages
-            results = self.search_messages(query)
+            # Show typing indicator while searching
+            async with message.channel.typing():
+                # Search for relevant messages
+                results = self.search_messages(query)
 
             if not results:
                 await message.channel.send(f"No relevant messages found (similarity threshold: {RECALL_SIMILARITY_THRESHOLD}).")
