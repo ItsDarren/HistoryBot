@@ -17,7 +17,7 @@ if not openai.api_key:
     raise ValueError("OPENAI_API_KEY environment variable is required")
 
 # Constants
-MESSAGE_STORE_FILE = "message_store.json"
+DB_FILE = "/data/message_store.db"
 EMBEDDING_MODEL = "text-embedding-ada-002"
 CHAT_MODEL = "gpt-3.5-turbo"
 MAX_RECALL_RESULTS = 5
@@ -33,8 +33,8 @@ class HistoryBot:
     def load_message_store(self) -> Dict[str, Any]:
         """Load message store from JSON file"""
         try:
-            if os.path.exists(MESSAGE_STORE_FILE):
-                with open(MESSAGE_STORE_FILE, 'r', encoding='utf-8') as f:
+            if os.path.exists(DB_FILE):
+                with open(DB_FILE, 'r', encoding='utf-8') as f:
                     return json.load(f)
             else:
                 return {"messages": []}
@@ -45,7 +45,7 @@ class HistoryBot:
     def save_message_store(self):
         """Save message store to JSON file"""
         try:
-            with open(MESSAGE_STORE_FILE, 'w', encoding='utf-8') as f:
+            with open(DB_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.message_store, f, indent=2, ensure_ascii=False)
         except Exception as e:
             print(f"Error saving message store: {e}")
