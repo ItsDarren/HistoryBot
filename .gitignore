@@ -11,6 +11,7 @@ secrets.json
 # Message store (contains user data)
 message_store.json
 message_store_*.json
+message_store.db
 
 # Python
 __pycache__/
