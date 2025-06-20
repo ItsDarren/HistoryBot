@@ -251,7 +251,10 @@ class HistoryCog(commands.Cog):
 async def main():
     intents = discord.Intents.default()
     intents.message_content = True
+
+    # The bot will automatically fetch the owner's ID from the application info
     bot = commands.Bot(command_prefix="!", intents=intents)
+
     async with bot:
         await bot.add_cog(HistoryCog(bot))
         await bot.start(discord_token)
