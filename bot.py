@@ -334,18 +334,25 @@ class HistoryBot:
             await message.channel.send(f"Error getting statistics: {str(e)}")
 
     async def handle_clear_command(self, message: discord.Message):
-        """Handle !clear command - clear user's ask history"""
+        """Handle !clear command - clear user's ask history and chat messages"""
         try:
             user_id = str(message.author.id)
-            deleted_count = self.clear_user_ask_history(user_id)
+            deleted_counts = self.clear_user_history(user_id)
             
-            if deleted_count > 0:
-                await message.channel.send(f"🗑️ Cleared {deleted_count} question(s) from your ask history, {message.author.display_name}!")
+            total_deleted = deleted_counts["ask_history"] + deleted_counts["messages"]
+            
+            if total_deleted > 0:
+                response = f"🗑️ Cleared your history, {message.author.display_name}!\n"
+                if deleted_counts["ask_history"] > 0:
+                    response += f"• {deleted_counts['ask_history']} question(s) from ask history\n"
+                if deleted_counts["messages"] > 0:
+                    response += f"• {deleted_counts['messages']} message(s) from chat history"
+                await message.channel.send(response)
             else:
-                await message.channel.send(f"ℹ️ You don't have any ask history to clear, {message.author.display_name}.")
+                await message.channel.send(f"ℹ️ You don't have any history to clear, {message.author.display_name}.")
                 
         except Exception as e:
-            await message.channel.send(f"Error clearing your ask history: {str(e)}")
+            await message.channel.send(f"Error clearing your history: {str(e)}")
 
     async def handle_help_command(self, message: discord.Message):
         """Handle !help command"""
@@ -360,7 +367,7 @@ Example: `!recall the time Kevin talked about Sion skin`
 
 **!stats** - Show bot statistics (messages stored, questions asked)
 
-**!clear** - Clear your own ask history (previous Q&A pairs)
+**!clear** - Clear your own history (ask history and chat messages)
 
 **!help** - Show this help message
 
@@ -389,13 +396,24 @@ Example: `!recall the time Kevin talked about Sion skin`
             "questions": total_questions
         }
     
-    def clear_user_ask_history(self, user_id: str) -> int:
-        """Clear ask history for a specific user and return number of deleted records"""
+    def clear_user_history(self, user_id: str) -> Dict[str, int]:
+        """Clear both ask history and chat messages for a specific user"""
         c = self.db.cursor()
+        
+        # Clear ask history
         c.execute('DELETE FROM ask_history WHERE user_id = ?', (user_id,))
-        deleted_count = c.rowcount
+        ask_deleted = c.rowcount
+        
+        # Clear chat messages
+        c.execute('DELETE FROM messages WHERE author_id = ?', (user_id,))
+        messages_deleted = c.rowcount
+        
         self.db.commit()
-        return deleted_count
+        
+        return {
+            "ask_history": ask_deleted,
+            "messages": messages_deleted
+        }
     
     def run(self):
         """Run the bot"""
