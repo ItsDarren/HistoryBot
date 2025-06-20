@@ -195,6 +195,8 @@ class HistoryBot:
                 await self.handle_recall_command(message)
             elif message.content == "!help":
                 await self.handle_help_command(message)
+            elif message.content == "!stats":
+                await self.handle_stats_command(message)
     
     def get_recent_channel_messages(self, channel_id: str, limit: int = 10) -> list:
         """Fetch recent messages from a channel for context"""
@@ -312,25 +314,62 @@ class HistoryBot:
         except Exception as e:
             await message.channel.send(f"Error searching messages: {str(e)}")
     
+    async def handle_stats_command(self, message: discord.Message):
+        """Handle !stats command"""
+        try:
+            stats = self.get_stats()
+            
+            stats_text = f"""
+📊 **HistoryBot Statistics**
+
+💬 **Messages Stored:** {stats['messages']:,}
+❓ **Questions Asked:** {stats['questions']:,}
+            """.strip()
+            
+            await message.channel.send(stats_text)
+            
+        except Exception as e:
+            await message.channel.send(f"Error getting statistics: {str(e)}")
+
     async def handle_help_command(self, message: discord.Message):
         """Handle !help command"""
         help_text = """
 🤖 **HistoryBot Commands:**
 
 **!ask <prompt>** - Ask me anything using GPT-3.5-Turbo
-Example: `!ask Do you think Jordan has good vocabulary?`
+Example: `!ask What's the weather like today?`
 
 **!recall <query>** - Search through stored messages using natural language
-Example: `!recall the time Kevin crashed out on losing his 50/50 at hard pity`
+Example: `!recall the time Kevin talked about Sion skin`
+
+**!stats** - Show bot statistics (messages stored, questions asked)
 
 **!help** - Show this help message
 
 💾 **Features:**
 - Automatically stores all messages with embeddings
 - Natural language search through conversation history
-- Persistent memory across bot restarts
+- Persistent memory across bot restarts (now using SQLite!)
+- Context-aware AI responses with chat history
         """
         await message.channel.send(help_text)
+    
+    def get_stats(self) -> Dict[str, int]:
+        """Get bot statistics from the database"""
+        c = self.db.cursor()
+        
+        # Count total messages
+        c.execute('SELECT COUNT(*) FROM messages')
+        total_messages = c.fetchone()[0]
+        
+        # Count total questions asked
+        c.execute('SELECT COUNT(*) FROM ask_history')
+        total_questions = c.fetchone()[0]
+        
+        return {
+            "messages": total_messages,
+            "questions": total_questions
+        }
     
     def run(self):
         """Run the bot"""
