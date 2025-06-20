@@ -18,13 +18,15 @@ if not openai.api_key:
     raise ValueError("OPENAI_API_KEY environment variable is required")
 
 # Constants
-DB_FILE = "/data/message_store.db"
+DB_FILE = "data/message_store.db"
 EMBEDDING_MODEL = "text-embedding-ada-002"
 CHAT_MODEL = "gpt-3.5-turbo"
 MAX_RECALL_RESULTS = 5
 
 class HistoryBot:
     def __init__(self):
+        # Ensure the data directory exists
+        os.makedirs("data", exist_ok=True)
         self.intents = discord.Intents.default()
         self.intents.message_content = True
         self.client = discord.Client(intents=self.intents)
