@@ -5,6 +5,7 @@ import openai
 import numpy as np
 from datetime import datetime
 from typing import List, Dict, Any
+import sqlite3
 
 # Load API keys from environment variables
 discord_token = os.getenv("DISCORD_TOKEN")
@@ -27,28 +28,29 @@ class HistoryBot:
         self.intents = discord.Intents.default()
         self.intents.message_content = True
         self.client = discord.Client(intents=self.intents)
-        self.message_store = self.load_message_store()
+        self.db = self.init_db()
         self.setup_events()
     
-    def load_message_store(self) -> Dict[str, Any]:
-        """Load message store from JSON file"""
-        try:
-            if os.path.exists(DB_FILE):
-                with open(DB_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            else:
-                return {"messages": []}
-        except Exception as e:
-            print(f"Error loading message store: {e}")
-            return {"messages": []}
-    
-    def save_message_store(self):
-        """Save message store to JSON file"""
-        try:
-            with open(DB_FILE, 'w', encoding='utf-8') as f:
-                json.dump(self.message_store, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            print(f"Error saving message store: {e}")
+    def init_db(self):
+        """Initialize SQLite database"""
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS messages (
+                id TEXT PRIMARY KEY,
+                content TEXT,
+                author TEXT,
+                author_id TEXT,
+                channel TEXT,
+                channel_id TEXT,
+                guild TEXT,
+                guild_id TEXT,
+                timestamp TEXT,
+                embedding TEXT
+            )
+        ''')
+        conn.commit()
+        return conn
     
     def get_embedding(self, text: str) -> List[float]:
         """Get embedding for text using OpenAI API"""
@@ -80,63 +82,76 @@ class HistoryBot:
         return dot_product / (norm1 * norm2)
     
     def store_message(self, message: discord.Message):
-        """Store message with embedding"""
+        """Store message with embedding in SQLite"""
         try:
-            # Skip bot messages and empty messages
             if message.author.bot or not message.content.strip():
                 return
-            
-            # Get embedding for message content
+
             embedding = self.get_embedding(message.content)
             if not embedding:
                 return
-            
-            # Create message record
-            message_record = {
-                "id": str(message.id),
-                "content": message.content,
-                "author": message.author.display_name,
-                "author_id": str(message.author.id),
-                "channel": message.channel.name,
-                "channel_id": str(message.channel.id),
-                "guild": message.guild.name if message.guild else "DM",
-                "guild_id": str(message.guild.id) if message.guild else "DM",
-                "timestamp": message.created_at.isoformat(),
-                "embedding": embedding
-            }
-            
-            # Add to store
-            self.message_store["messages"].append(message_record)
-            
-            # Save to file
-            self.save_message_store()
-            
+
+            c = self.db.cursor()
+            c.execute('''
+                INSERT OR REPLACE INTO messages (
+                    id, content, author, author_id, channel, channel_id, guild, guild_id, timestamp, embedding
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                str(message.id),
+                message.content,
+                message.author.display_name,
+                str(message.author.id),
+                message.channel.name,
+                str(message.channel.id),
+                message.guild.name if message.guild else "DM",
+                str(message.guild.id) if message.guild else "DM",
+                message.created_at.isoformat(),
+                json.dumps(embedding)
+            ))
+            self.db.commit()
             print(f"Stored message from {message.author.display_name}: {message.content[:50]}...")
-            
+
         except Exception as e:
             print(f"Error storing message: {e}")
     
     def search_messages(self, query: str, limit: int = MAX_RECALL_RESULTS) -> List[Dict[str, Any]]:
         """Search messages using semantic similarity"""
         try:
-            # Get embedding for query
             query_embedding = self.get_embedding(query)
             if not query_embedding:
                 return []
-            
-            # Calculate similarities
+
+            c = self.db.cursor()
+            c.execute('SELECT * FROM messages')
+            all_msgs = c.fetchall()
+
             similarities = []
-            for msg in self.message_store["messages"]:
-                if "embedding" in msg:
-                    similarity = self.cosine_similarity(query_embedding, msg["embedding"])
-                    similarities.append((similarity, msg))
-            
+            for row in all_msgs:
+                msg = {
+                    "id": row[0],
+                    "content": row[1],
+                    "author": row[2],
+                    "author_id": row[3],
+                    "channel": row[4],
+                    "channel_id": row[5],
+                    "guild": row[6],
+                    "guild_id": row[7],
+                    "timestamp": row[8],
+                    "embedding": json.loads(row[9])
+                }
+                similarity = self.cosine_similarity(query_embedding, msg["embedding"])
+                similarities.append((similarity, msg))
+
             # Sort by similarity (highest first)
             similarities.sort(key=lambda x: x[0], reverse=True)
-            
-            # Return top results
-            return [msg for _, msg in similarities[:limit]]
-            
+
+            # Only return results with similarity above a threshold (e.g., 0.7)
+            threshold = 0.7
+            filtered = [msg for sim, msg in similarities if sim >= threshold]
+
+            # Return up to 'limit' results
+            return filtered[:limit]
+
         except Exception as e:
             print(f"Error searching messages: {e}")
             return []
@@ -152,7 +167,6 @@ class HistoryBot:
         @self.client.event
         async def on_ready():
             print(f"HistoryBot is ready as {self.client.user}")
-            print(f"Loaded {len(self.message_store['messages'])} stored messages")
         
         @self.client.event
         async def on_message(message):
