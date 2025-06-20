@@ -22,6 +22,7 @@ DB_FILE = "data/message_store.db"
 EMBEDDING_MODEL = "text-embedding-ada-002"
 CHAT_MODEL = "gpt-3.5-turbo"
 MAX_RECALL_RESULTS = 5
+RECALL_SIMILARITY_THRESHOLD = 0.75
 
 class HistoryBot:
     def __init__(self):
@@ -34,7 +35,7 @@ class HistoryBot:
         self.setup_events()
     
     def init_db(self):
-        """Initialize SQLite database"""
+        """Initialize SQLite database and tables"""
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
         c.execute('''
@@ -49,6 +50,15 @@ class HistoryBot:
                 guild_id TEXT,
                 timestamp TEXT,
                 embedding TEXT
+            )
+        ''')
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS ask_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                question TEXT,
+                answer TEXT,
+                timestamp TEXT
             )
         ''')
         conn.commit()
@@ -116,8 +126,8 @@ class HistoryBot:
         except Exception as e:
             print(f"Error storing message: {e}")
     
-    def search_messages(self, query: str, limit: int = MAX_RECALL_RESULTS) -> List[Dict[str, Any]]:
-        """Search messages using semantic similarity"""
+    def search_messages(self, query: str) -> List[Dict[str, Any]]:
+        """Search messages using semantic similarity and a fixed threshold"""
         try:
             query_embedding = self.get_embedding(query)
             if not query_embedding:
@@ -147,12 +157,9 @@ class HistoryBot:
             # Sort by similarity (highest first)
             similarities.sort(key=lambda x: x[0], reverse=True)
 
-            # Only return results with similarity above a threshold (e.g., 0.7)
-            threshold = 0.7
-            filtered = [msg for sim, msg in similarities if sim >= threshold]
-
-            # Return up to 'limit' results
-            return filtered[:limit]
+            # Only return results with similarity above the threshold
+            filtered = [msg for sim, msg in similarities if sim >= RECALL_SIMILARITY_THRESHOLD]
+            return filtered
 
         except Exception as e:
             print(f"Error searching messages: {e}")
@@ -188,23 +195,81 @@ class HistoryBot:
             elif message.content == "!help":
                 await self.handle_help_command(message)
     
+    def get_recent_channel_messages(self, channel_id: str, limit: int = 10) -> list:
+        """Fetch recent messages from a channel for context"""
+        c = self.db.cursor()
+        c.execute('''
+            SELECT author, content, timestamp FROM messages
+            WHERE channel_id = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        ''', (channel_id, limit))
+        rows = c.fetchall()
+        # Return in chronological order
+        return rows[::-1]
+
+    def get_user_ask_history(self, user_id: str, limit: int = 3) -> list:
+        """Fetch recent ask Q&A pairs for a user"""
+        c = self.db.cursor()
+        c.execute('''
+            SELECT question, answer, timestamp FROM ask_history
+            WHERE user_id = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        ''', (user_id, limit))
+        rows = c.fetchall()
+        # Return in chronological order
+        return rows[::-1]
+
+    def store_ask_interaction(self, user_id: str, question: str, answer: str):
+        c = self.db.cursor()
+        c.execute('''
+            INSERT INTO ask_history (user_id, question, answer, timestamp)
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, question, answer, datetime.utcnow().isoformat()))
+        self.db.commit()
+
     async def handle_ask_command(self, message: discord.Message):
-        """Handle !ask command"""
+        """Handle !ask command with chat and ask history context"""
         try:
             prompt = message.content[len("!ask "):].strip()
             if not prompt:
                 await message.channel.send("Please provide a prompt after !ask")
                 return
-            
+
+            # Fetch recent chat history from the channel
+            recent_msgs = self.get_recent_channel_messages(str(message.channel.id), limit=10)
+            chat_history = "\n".join([
+                f"{author}: {content}" for author, content, _ in recent_msgs
+            ])
+
+            # Fetch previous ask Q&A for this user
+            ask_history = self.get_user_ask_history(str(message.author.id), limit=3)
+            ask_history_str = "\n".join([
+                f"Q: {q}\nA: {a}" for q, a, _ in ask_history
+            ])
+
+            # Build the system/context prompt
+            system_prompt = "You are a helpful assistant. Here is the recent chat history and previous questions and answers. Use this context to answer the user's new question."
+            full_prompt = (
+                f"{system_prompt}\n\n"
+                f"Recent chat history:\n{chat_history}\n\n"
+                f"Previous Q&A:\n{ask_history_str}\n\n"
+                f"New question: {prompt}"
+            )
+
             # Call OpenAI Chat API
             response = openai.chat.completions.create(
                 model=CHAT_MODEL,
-                messages=[{"role": "user", "content": prompt}]
+                messages=[{"role": "user", "content": full_prompt}]
             )
-            
+
             answer = response.choices[0].message.content.strip()
             await message.channel.send(answer)
-            
+
+            # Store the Q&A in ask_history
+            self.store_ask_interaction(str(message.author.id), prompt, answer)
+
         except Exception as e:
             await message.channel.send(f"Error processing your request: {str(e)}")
     
@@ -215,21 +280,21 @@ class HistoryBot:
             if not query:
                 await message.channel.send("Please provide a search query after !recall")
                 return
-            
+
             await message.channel.send(f"🔍 Searching for messages related to: *{query}*")
-            
+
             # Search for relevant messages
             results = self.search_messages(query)
-            
+
             if not results:
-                await message.channel.send("No relevant messages found.")
+                await message.channel.send(f"No relevant messages found (similarity threshold: {RECALL_SIMILARITY_THRESHOLD}).")
                 return
-            
+
             # Format and send results
             response = f"📝 Found {len(results)} relevant message(s):\n\n"
             for i, msg in enumerate(results, 1):
                 response += f"**{i}.** {self.format_message_for_display(msg)}\n\n"
-            
+
             # Split if response is too long
             if len(response) > 2000:
                 chunks = [response[i:i+1900] for i in range(0, len(response), 1900)]
@@ -237,7 +302,7 @@ class HistoryBot:
                     await message.channel.send(chunk)
             else:
                 await message.channel.send(response)
-                
+
         except Exception as e:
             await message.channel.send(f"Error searching messages: {str(e)}")
     
