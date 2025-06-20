@@ -166,10 +166,10 @@ class HistoryBot:
             return []
     
     def format_message_for_display(self, msg: Dict[str, Any]) -> str:
-        """Format a stored message for display with clear date/time and @username"""
-        timestamp = datetime.fromisoformat(msg["timestamp"]).strftime("%Y-%m-%d **[%H:%M]**")
+        """Format a stored message for display with clear MM/DD/YYYY date, 12-hour time with AM/PM, and @username."""
+        timestamp = datetime.fromisoformat(msg["timestamp"]).strftime("%m/%d/%Y [%I:%M %p]")
         author_display = f"**@{msg['author']}**"
-        return f"{author_display}  _(on {timestamp})_:\n> {msg['content']}"
+        return f"{author_display}  _({timestamp})_:\n> {msg['content']}"
     
     def setup_events(self):
         """Setup Discord event handlers"""
