@@ -168,10 +168,7 @@ class HistoryBot:
     def format_message_for_display(self, msg: Dict[str, Any]) -> str:
         """Format a stored message for display with clear date/time and @username"""
         timestamp = datetime.fromisoformat(msg["timestamp"]).strftime("%Y-%m-%d **[%H:%M]**")
-        # Use @username and bold for clarity
-        author_display = f"<@{msg['author']}>", if you want to ping, or just @username
         author_display = f"**@{msg['author']}**"
-        # Format: @username [YYYY-MM-DD [HH:MM]]: message
         return f"{author_display}  _(on {timestamp})_:\n> {msg['content']}"
     
     def setup_events(self):
