@@ -197,6 +197,8 @@ class HistoryBot:
                 await self.handle_help_command(message)
             elif message.content == "!stats":
                 await self.handle_stats_command(message)
+            elif message.content == "!clear":
+                await self.handle_clear_command(message)
     
     def get_recent_channel_messages(self, channel_id: str, limit: int = 10) -> list:
         """Fetch recent messages from a channel for context"""
@@ -331,6 +333,20 @@ class HistoryBot:
         except Exception as e:
             await message.channel.send(f"Error getting statistics: {str(e)}")
 
+    async def handle_clear_command(self, message: discord.Message):
+        """Handle !clear command - clear user's ask history"""
+        try:
+            user_id = str(message.author.id)
+            deleted_count = self.clear_user_ask_history(user_id)
+            
+            if deleted_count > 0:
+                await message.channel.send(f"🗑️ Cleared {deleted_count} question(s) from your ask history, {message.author.display_name}!")
+            else:
+                await message.channel.send(f"ℹ️ You don't have any ask history to clear, {message.author.display_name}.")
+                
+        except Exception as e:
+            await message.channel.send(f"Error clearing your ask history: {str(e)}")
+
     async def handle_help_command(self, message: discord.Message):
         """Handle !help command"""
         help_text = """
@@ -343,6 +359,8 @@ Example: `!ask What's the weather like today?`
 Example: `!recall the time Kevin talked about Sion skin`
 
 **!stats** - Show bot statistics (messages stored, questions asked)
+
+**!clear** - Clear your own ask history (previous Q&A pairs)
 
 **!help** - Show this help message
 
@@ -370,6 +388,14 @@ Example: `!recall the time Kevin talked about Sion skin`
             "messages": total_messages,
             "questions": total_questions
         }
+    
+    def clear_user_ask_history(self, user_id: str) -> int:
+        """Clear ask history for a specific user and return number of deleted records"""
+        c = self.db.cursor()
+        c.execute('DELETE FROM ask_history WHERE user_id = ?', (user_id,))
+        deleted_count = c.rowcount
+        self.db.commit()
+        return deleted_count
     
     def run(self):
         """Run the bot"""
