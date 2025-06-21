@@ -25,6 +25,7 @@ CHAT_MODEL = "gpt-3.5-turbo"
 MAX_RECALL_RESULTS = 5
 RECALL_SIMILARITY_THRESHOLD = 0.75
 ASK_RATE_LIMIT = 3  # questions per minute
+RATE_LIMIT = 3  # commands per minute
 
 class HistoryBot:
     def __init__(self):
@@ -35,6 +36,7 @@ class HistoryBot:
         self.client = discord.Client(intents=self.intents)
         self.db = self.init_db()
         self.ask_cooldowns = defaultdict(list)  # Track ask timestamps per user
+        self.command_cooldowns = defaultdict(list)  # Track command timestamps per user
         self.setup_events()
     
     def init_db(self):
@@ -240,20 +242,20 @@ class HistoryBot:
         self.db.commit()
 
     def is_user_rate_limited(self, user_id: str) -> bool:
-        """Check if user is rate limited (more than 3 asks per minute)"""
+        """Check if user is rate limited (more than 3 commands per minute)"""
         now = datetime.utcnow()
-        user_asks = self.ask_cooldowns[user_id]
+        user_commands = self.command_cooldowns[user_id]
         
-        # Remove asks older than 1 minute
-        user_asks = [ask_time for ask_time in user_asks if now - ask_time < timedelta(minutes=1)]
-        self.ask_cooldowns[user_id] = user_asks
+        # Remove commands older than 1 minute
+        user_commands = [cmd_time for cmd_time in user_commands if now - cmd_time < timedelta(minutes=1)]
+        self.command_cooldowns[user_id] = user_commands
         
-        # Check if user has asked 3 or more times in the last minute
-        return len(user_asks) >= ASK_RATE_LIMIT
+        # Check if user has used 3 or more commands in the last minute
+        return len(user_commands) >= RATE_LIMIT
 
-    def add_user_ask(self, user_id: str):
-        """Add a new ask timestamp for rate limiting"""
-        self.ask_cooldowns[user_id].append(datetime.utcnow())
+    def add_user_command(self, user_id: str):
+        """Add a new command timestamp for rate limiting"""
+        self.command_cooldowns[user_id].append(datetime.utcnow())
 
     async def handle_ask_command(self, message: discord.Message):
         """Handle !ask command with chat and ask history context"""
@@ -262,7 +264,7 @@ class HistoryBot:
             
             # Check rate limiting
             if self.is_user_rate_limited(user_id):
-                await message.channel.send(f"⏰ Rate limit exceeded! You can only ask {ASK_RATE_LIMIT} questions per minute. Please wait a moment before asking again.")
+                await message.channel.send(f"⏰ Rate limit exceeded! You can only use {RATE_LIMIT} commands per minute. Please wait a moment before trying again.")
                 return
             
             prompt = message.content[len("!ask "):].strip()
@@ -271,7 +273,7 @@ class HistoryBot:
                 return
 
             # Add to rate limiting tracker
-            self.add_user_ask(user_id)
+            self.add_user_command(user_id)
 
             # Show typing indicator
             async with message.channel.typing():
@@ -315,10 +317,20 @@ class HistoryBot:
     async def handle_recall_command(self, message: discord.Message):
         """Handle !recall command"""
         try:
+            user_id = str(message.author.id)
+            
+            # Check rate limiting
+            if self.is_user_rate_limited(user_id):
+                await message.channel.send(f"⏰ Rate limit exceeded! You can only use {RATE_LIMIT} commands per minute. Please wait a moment before trying again.")
+                return
+            
             query = message.content[len("!recall "):].strip()
             if not query:
                 await message.channel.send("Please provide a search query after !recall")
                 return
+
+            # Add to rate limiting tracker
+            self.add_user_command(user_id)
 
             await message.channel.send(f"🔍 Searching for messages related to: *{query}*")
 
