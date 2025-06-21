@@ -199,6 +199,8 @@ class HistoryBot:
                 await self.handle_stats_command(message)
             elif message.content == "!clear":
                 await self.handle_clear_command(message)
+            elif message.content == "!history":
+                await self.handle_history_command(message)
     
     def get_recent_channel_messages(self, channel_id: str, limit: int = 10) -> list:
         """Fetch recent messages from a channel for context"""
@@ -354,6 +356,40 @@ class HistoryBot:
         except Exception as e:
             await message.channel.send(f"Error clearing your history: {str(e)}")
 
+    async def handle_history_command(self, message: discord.Message):
+        """Handle !history command - show user's message stats and recent messages"""
+        try:
+            user_id = str(message.author.id)
+            stats = self.get_user_message_stats(user_id)
+            
+            # Build the response
+            response = f"📝 **Message History for {message.author.display_name}**\n\n"
+            response += f"💬 **Total Messages:** {stats['total_messages']:,}\n\n"
+            
+            if stats['recent_messages']:
+                response += "**Recent Messages:**\n"
+                for i, (content, timestamp) in enumerate(stats['recent_messages'], 1):
+                    # Format timestamp
+                    dt = datetime.fromisoformat(timestamp)
+                    formatted_time = dt.strftime("%m/%d/%Y [%I:%M %p]")
+                    
+                    # Truncate long messages
+                    display_content = content[:100] + "..." if len(content) > 100 else content
+                    response += f"**{i}.** _{formatted_time}_\n> {display_content}\n\n"
+            else:
+                response += "No messages found."
+            
+            # Split if response is too long
+            if len(response) > 2000:
+                chunks = [response[i:i+1900] for i in range(0, len(response), 1900)]
+                for chunk in chunks:
+                    await message.channel.send(chunk)
+            else:
+                await message.channel.send(response)
+                
+        except Exception as e:
+            await message.channel.send(f"Error getting your message history: {str(e)}")
+
     async def handle_help_command(self, message: discord.Message):
         """Handle !help command"""
         help_text = """
@@ -366,6 +402,8 @@ Example: `!ask What's the weather like today?`
 Example: `!recall the time Kevin talked about Sion skin`
 
 **!stats** - Show bot statistics (messages stored, questions asked)
+
+**!history** - Show your message history (total count and recent messages)
 
 **!clear** - Clear your own history (ask history and chat messages)
 
@@ -413,6 +451,28 @@ Example: `!recall the time Kevin talked about Sion skin`
         return {
             "ask_history": ask_deleted,
             "messages": messages_deleted
+        }
+    
+    def get_user_message_stats(self, user_id: str) -> Dict[str, Any]:
+        """Get message statistics for a specific user"""
+        c = self.db.cursor()
+        
+        # Count total messages
+        c.execute('SELECT COUNT(*) FROM messages WHERE author_id = ?', (user_id,))
+        total_messages = c.fetchone()[0]
+        
+        # Get recent messages
+        c.execute('''
+            SELECT content, timestamp FROM messages 
+            WHERE author_id = ? 
+            ORDER BY timestamp DESC 
+            LIMIT 10
+        ''', (user_id,))
+        recent_messages = c.fetchall()
+        
+        return {
+            "total_messages": total_messages,
+            "recent_messages": recent_messages
         }
     
     def run(self):
