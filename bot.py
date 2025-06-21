@@ -145,8 +145,6 @@ class HistoryBot:
                 now = datetime.utcnow()
                 if date_filter == "today":
                     start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                elif date_filter == "yesterday":
-                    start_date = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
                 elif date_filter == "week":
                     start_date = now - timedelta(days=7)
                 elif date_filter == "month":
@@ -376,9 +374,9 @@ class HistoryBot:
                     query = parts[1].strip()
                     
                     # Validate date filter
-                    valid_filters = ["today", "yesterday", "week", "month", "year"]
+                    valid_filters = ["today", "week", "month", "year"]
                     if date_filter not in valid_filters:
-                        await message.channel.send(f"Invalid date filter. Use: today, yesterday, week, month, or year")
+                        await message.channel.send(f"Invalid date filter. Use: today, week, month, or year")
                         return
 
             # Add to rate limiting tracker
@@ -439,19 +437,47 @@ class HistoryBot:
         """Handle !clear command - clear user's ask history and chat messages"""
         try:
             user_id = str(message.author.id)
-            deleted_counts = self.clear_user_history(user_id)
+            
+            # Parse the full command to check for date filter
+            full_command = message.content.strip()
+            
+            # Handle both !clear and !c prefixes
+            if full_command.startswith("!clear "):
+                args = full_command[len("!clear "):].strip()
+            elif full_command.startswith("!c "):
+                args = full_command[len("!c "):].strip()
+            else:
+                # No arguments, clear all history
+                args = ""
+            
+            date_filter = None
+            
+            # Check if date filter is specified
+            if args.startswith("date:"):
+                parts = args.split(" ", 1)
+                if len(parts) >= 1:
+                    date_filter = parts[0][5:]  # Remove "date:" prefix
+                    
+                    # Validate date filter
+                    valid_filters = ["today", "week", "month", "year"]
+                    if date_filter not in valid_filters:
+                        await message.channel.send(f"Invalid date filter. Use: today, week, month, or year")
+                        return
+            
+            deleted_counts = self.clear_user_history(user_id, date_filter)
             
             total_deleted = deleted_counts["ask_history"] + deleted_counts["messages"]
+            date_info = f" from {date_filter}" if date_filter else ""
             
             if total_deleted > 0:
-                response = f"🗑️ Cleared your history, {message.author.display_name}!\n"
+                response = f"🗑️ Cleared your history{date_info}, {message.author.display_name}!\n"
                 if deleted_counts["ask_history"] > 0:
                     response += f"• {deleted_counts['ask_history']} question(s) from ask history\n"
                 if deleted_counts["messages"] > 0:
                     response += f"• {deleted_counts['messages']} message(s) from chat history"
                 await message.channel.send(response)
             else:
-                await message.channel.send(f"ℹ️ You don't have any history to clear, {message.author.display_name}.")
+                await message.channel.send(f"ℹ️ You don't have any history{date_info} to clear, {message.author.display_name}.")
                 
         except Exception as e:
             await message.channel.send(f"Error clearing your history: {str(e)}")
@@ -501,7 +527,7 @@ Example: `!ask What's the weather like today?` or `!a What's the weather like to
 **!recall / !r <query>** - Search through stored messages using natural language
 Example: `!recall the time Kevin talked about Sion skin` or `!r the time Kevin talked about Sion skin`
 
-**Date Filtering:** Add `date:today` (or yesterday/week/month/year) to search specific time periods
+**Date Filtering:** Add `date:today` (or week/month/year) to search specific time periods
 Example: `!recall date:today jordan` or `!r date:week project discussion`
 
 **!stats / !s** - Show bot statistics (messages stored, questions asked)
@@ -509,6 +535,8 @@ Example: `!recall date:today jordan` or `!r date:week project discussion`
 **!history / !hist** - Show your message history (total count and recent messages)
 
 **!clear / !c** - Clear your own history (ask history and chat messages)
+**Date Filtering:** Add `date:today` (or week/month/year) to clear specific time periods
+Example: `!clear date:today` or `!c date:week`
 
 **!help / !h** - Show this help message
 
@@ -518,7 +546,7 @@ Example: `!recall date:today jordan` or `!r date:week project discussion`
 - Persistent memory across bot restarts (now using SQLite!)
 - Context-aware AI responses with chat history
 - Command aliases for faster typing
-- Date filtering for targeted searches
+- Date filtering for targeted searches and history clearing
         """
         await message.channel.send(help_text)
     
@@ -539,23 +567,49 @@ Example: `!recall date:today jordan` or `!r date:week project discussion`
             "questions": total_questions
         }
     
-    def clear_user_history(self, user_id: str) -> Dict[str, int]:
-        """Clear both ask history and chat messages for a specific user"""
+    def clear_user_history(self, user_id: str, date_filter: str = None) -> Dict[str, int]:
+        """Clear both ask history and chat messages for a specific user, optionally filtered by date"""
         c = self.db.cursor()
         
+        # Build date filter if specified
+        date_condition = ""
+        params = [user_id]
+        
+        if date_filter:
+            now = datetime.utcnow()
+            if date_filter == "today":
+                start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            elif date_filter == "week":
+                start_date = now - timedelta(days=7)
+            elif date_filter == "month":
+                start_date = now - timedelta(days=30)
+            elif date_filter == "year":
+                start_date = now - timedelta(days=365)
+            else:
+                # Invalid date filter, ignore it
+                date_filter = None
+            
+            if date_filter:
+                date_condition = " AND timestamp >= ?"
+                params.append(start_date.isoformat())
+        
         # Clear ask history
-        c.execute('DELETE FROM ask_history WHERE user_id = ?', (user_id,))
+        c.execute(f'DELETE FROM ask_history WHERE user_id = ?{date_condition}', params)
         ask_deleted = c.rowcount
         
-        # Clear chat messages
-        c.execute('DELETE FROM messages WHERE author_id = ?', (user_id,))
+        # Clear chat messages (reset params for messages table)
+        params = [user_id]
+        if date_filter:
+            params.append(start_date.isoformat())
+        c.execute(f'DELETE FROM messages WHERE author_id = ?{date_condition}', params)
         messages_deleted = c.rowcount
         
         self.db.commit()
         
         return {
             "ask_history": ask_deleted,
-            "messages": messages_deleted
+            "messages": messages_deleted,
+            "date_filter": date_filter
         }
     
     def get_user_message_stats(self, user_id: str) -> Dict[str, Any]:
@@ -586,4 +640,4 @@ Example: `!recall date:today jordan` or `!r date:week project discussion`
 
 if __name__ == "__main__":
     bot = HistoryBot()
-    bot.run() 
+    bot.run()
