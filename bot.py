@@ -22,9 +22,7 @@ if not openai.api_key:
 DB_FILE = "data/message_store.db"
 EMBEDDING_MODEL = "text-embedding-ada-002"
 CHAT_MODEL = "gpt-3.5-turbo"
-MAX_RECALL_RESULTS = 5
 RECALL_SIMILARITY_THRESHOLD = 0.75
-ASK_RATE_LIMIT = 3  # questions per minute
 RATE_LIMIT = 3  # commands per minute
 
 class HistoryBot:
@@ -35,7 +33,6 @@ class HistoryBot:
         self.intents.message_content = True
         self.client = discord.Client(intents=self.intents)
         self.db = self.init_db()
-        self.ask_cooldowns = defaultdict(list)  # Track ask timestamps per user
         self.command_cooldowns = defaultdict(list)  # Track command timestamps per user
         self.setup_events()
     
