@@ -128,15 +128,40 @@ class HistoryBot:
         except Exception as e:
             print(f"Error storing message: {e}")
     
-    def search_messages(self, query: str) -> List[Dict[str, Any]]:
-        """Search messages using semantic similarity and a fixed threshold"""
+    def search_messages(self, query: str, date_filter: str = None) -> List[tuple]:
+        """Search messages using semantic similarity and a fixed threshold. Returns (similarity_score, message) tuples."""
         try:
             query_embedding = self.get_embedding(query)
             if not query_embedding:
                 return []
 
             c = self.db.cursor()
-            c.execute('SELECT * FROM messages')
+            
+            # Build the SQL query with optional date filtering
+            sql_query = 'SELECT * FROM messages'
+            params = []
+            
+            if date_filter:
+                now = datetime.utcnow()
+                if date_filter == "today":
+                    start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                elif date_filter == "yesterday":
+                    start_date = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+                elif date_filter == "week":
+                    start_date = now - timedelta(days=7)
+                elif date_filter == "month":
+                    start_date = now - timedelta(days=30)
+                elif date_filter == "year":
+                    start_date = now - timedelta(days=365)
+                else:
+                    # Invalid date filter, ignore it
+                    date_filter = None
+                
+                if date_filter:
+                    sql_query += ' WHERE timestamp >= ?'
+                    params.append(start_date.isoformat())
+            
+            c.execute(sql_query, params)
             all_msgs = c.fetchall()
 
             similarities = []
@@ -160,18 +185,22 @@ class HistoryBot:
             similarities.sort(key=lambda x: x[0], reverse=True)
 
             # Only return results with similarity above the threshold
-            filtered = [msg for sim, msg in similarities if sim >= RECALL_SIMILARITY_THRESHOLD]
+            filtered = [(sim, msg) for sim, msg in similarities if sim >= RECALL_SIMILARITY_THRESHOLD]
             return filtered
 
         except Exception as e:
             print(f"Error searching messages: {e}")
             return []
     
-    def format_message_for_display(self, msg: Dict[str, Any]) -> str:
+    def format_message_for_display(self, msg: Dict[str, Any], confidence: int = None) -> str:
         """Format a stored message for display with clear MM/DD/YYYY date, 12-hour time with AM/PM, and @username."""
         timestamp = datetime.fromisoformat(msg["timestamp"]).strftime("%m/%d/%Y [%I:%M %p]")
         author_display = f"**@{msg['author']}**"
-        return f"{author_display}  _({timestamp})_:\n> {msg['content']}"
+        
+        if confidence is not None:
+            return f"{author_display} **({confidence}% match)** _(on {timestamp})_:\n> {msg['content']}"
+        else:
+            return f"{author_display}  _({timestamp})_:\n> {msg['content']}"
     
     def setup_events(self):
         """Setup Discord event handlers"""
@@ -191,18 +220,18 @@ class HistoryBot:
                 self.store_message(message)
             
             # Handle commands
-            if message.content.startswith("!ask "):
+            if message.content.startswith("!ask ") or message.content.startswith("!a "):
                 await self.handle_ask_command(message)
-            elif message.content.startswith("!recall "):
+            elif message.content.startswith("!recall ") or message.content.startswith("!r "):
                 await self.handle_recall_command(message)
-            elif message.content == "!help":
+            elif message.content == "!help" or message.content == "!h":
                 await self.handle_help_command(message)
-            elif message.content == "!stats":
+            elif message.content == "!stats" or message.content == "!s":
                 await self.handle_stats_command(message)
-            elif message.content == "!clear":
-                await self.handle_clear_command(message)
-            elif message.content == "!history":
+            elif message.content == "!history" or message.content == "!hist":
                 await self.handle_history_command(message)
+            elif message.content == "!clear" or message.content == "!c":
+                await self.handle_clear_command(message)
     
     def get_recent_channel_messages(self, channel_id: str, limit: int = 10) -> list:
         """Fetch recent messages from a channel for context"""
@@ -264,9 +293,14 @@ class HistoryBot:
                 await message.channel.send(f"⏰ Rate limit exceeded! You can only use {RATE_LIMIT} commands per minute. Please wait a moment before trying again.")
                 return
             
-            prompt = message.content[len("!ask "):].strip()
+            # Handle both !ask and !a prefixes
+            if message.content.startswith("!ask "):
+                prompt = message.content[len("!ask "):].strip()
+            else:  # !a
+                prompt = message.content[len("!a "):].strip()
+                
             if not prompt:
-                await message.channel.send("Please provide a prompt after !ask")
+                await message.channel.send("Please provide a prompt after !ask or !a")
                 return
 
             # Add to rate limiting tracker
@@ -321,29 +355,57 @@ class HistoryBot:
                 await message.channel.send(f"⏰ Rate limit exceeded! You can only use {RATE_LIMIT} commands per minute. Please wait a moment before trying again.")
                 return
             
-            query = message.content[len("!recall "):].strip()
-            if not query:
-                await message.channel.send("Please provide a search query after !recall")
+            # Handle both !recall and !r prefixes
+            if message.content.startswith("!recall "):
+                full_query = message.content[len("!recall "):].strip()
+            else:  # !r
+                full_query = message.content[len("!r "):].strip()
+                
+            if not full_query:
+                await message.channel.send("Please provide a search query after !recall or !r")
                 return
+
+            # Parse date filter if present
+            date_filter = None
+            query = full_query
+            
+            if "date:" in full_query:
+                parts = full_query.split(" ", 1)
+                if len(parts) >= 2 and parts[0].startswith("date:"):
+                    date_filter = parts[0][5:]  # Remove "date:" prefix
+                    query = parts[1].strip()
+                    
+                    # Validate date filter
+                    valid_filters = ["today", "yesterday", "week", "month", "year"]
+                    if date_filter not in valid_filters:
+                        await message.channel.send(f"Invalid date filter. Use: today, yesterday, week, month, or year")
+                        return
 
             # Add to rate limiting tracker
             self.add_user_command(user_id)
 
-            await message.channel.send(f"🔍 Searching for messages related to: *{query}*")
+            search_msg = f"🔍 Searching for messages related to: *{query}*"
+            if date_filter:
+                search_msg += f" (from {date_filter})"
+            await message.channel.send(search_msg)
 
             # Show typing indicator while searching
             async with message.channel.typing():
                 # Search for relevant messages
-                results = self.search_messages(query)
+                results = self.search_messages(query, date_filter)
 
             if not results:
-                await message.channel.send(f"No relevant messages found (similarity threshold: {RECALL_SIMILARITY_THRESHOLD}).")
+                date_info = f" from {date_filter}" if date_filter else ""
+                await message.channel.send(f"No relevant messages found{date_info} (similarity threshold: {RECALL_SIMILARITY_THRESHOLD}).")
                 return
 
-            # Format and send results
-            response = f"📝 Found {len(results)} relevant message(s):\n\n"
-            for i, msg in enumerate(results, 1):
-                response += f"**{i}.** {self.format_message_for_display(msg)}\n\n"
+            # Format and send results with similarity scores
+            date_info = f" (from {date_filter})" if date_filter else ""
+            response = f"📝 Found {len(results)} relevant message(s){date_info}:\n\n"
+            for i, (similarity, msg) in enumerate(results, 1):
+                # Convert similarity to percentage
+                confidence = int(similarity * 100)
+                response += f"**{i}.** {self.format_message_for_display(msg, confidence)}\n\n"
 
             # Split if response is too long
             if len(response) > 2000:
@@ -433,25 +495,30 @@ class HistoryBot:
         help_text = """
 🤖 **HistoryBot Commands:**
 
-**!ask <prompt>** - Ask me anything using GPT-3.5-Turbo
-Example: `!ask What's the weather like today?`
+**!ask / !a <prompt>** - Ask me anything using GPT-3.5-Turbo
+Example: `!ask What's the weather like today?` or `!a What's the weather like today?`
 
-**!recall <query>** - Search through stored messages using natural language
-Example: `!recall the time Kevin talked about Sion skin`
+**!recall / !r <query>** - Search through stored messages using natural language
+Example: `!recall the time Kevin talked about Sion skin` or `!r the time Kevin talked about Sion skin`
 
-**!stats** - Show bot statistics (messages stored, questions asked)
+**Date Filtering:** Add `date:today` (or yesterday/week/month/year) to search specific time periods
+Example: `!recall date:today jordan` or `!r date:week project discussion`
 
-**!history** - Show your message history (total count and recent messages)
+**!stats / !s** - Show bot statistics (messages stored, questions asked)
 
-**!clear** - Clear your own history (ask history and chat messages)
+**!history / !hist** - Show your message history (total count and recent messages)
 
-**!help** - Show this help message
+**!clear / !c** - Clear your own history (ask history and chat messages)
+
+**!help / !h** - Show this help message
 
 💾 **Features:**
 - Automatically stores all messages with embeddings
 - Natural language search through conversation history
 - Persistent memory across bot restarts (now using SQLite!)
 - Context-aware AI responses with chat history
+- Command aliases for faster typing
+- Date filtering for targeted searches
         """
         await message.channel.send(help_text)
     
