@@ -519,7 +519,7 @@ class HistoryBot:
     async def handle_help_command(self, message: discord.Message):
         """Handle !help command"""
         help_text = """
-🤖 **HistoryBot Commands:**
+**HistoryBot Commands:**
 
 **!ask / !a <prompt>** - Ask me anything using GPT-3.5-Turbo
 Example: `!ask What is 9+1?` or `!a What is 9+1?`
