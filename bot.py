@@ -522,10 +522,10 @@ class HistoryBot:
 🤖 **HistoryBot Commands:**
 
 **!ask / !a <prompt>** - Ask me anything using GPT-3.5-Turbo
-Example: `!ask What's the weather like today?` or `!a What's the weather like today?`
+Example: `!ask What is 9+1?` or `!a What is 9+1?`
 
 **!recall / !r <query>** - Search through stored messages using natural language
-Example: `!recall the time Kevin talked about Sion skin` or `!r the time Kevin talked about Sion skin`
+Example: `!recall when we talked about genshin impact` or `!r when we talked about genshin impact`
     **Date Filtering:** Add `date:today` (or week/month/year) to search specific time periods
     Example: `!recall date:today jordan` or `!r date:week project discussion`
 
