@@ -526,17 +526,16 @@ Example: `!ask What's the weather like today?` or `!a What's the weather like to
 
 **!recall / !r <query>** - Search through stored messages using natural language
 Example: `!recall the time Kevin talked about Sion skin` or `!r the time Kevin talked about Sion skin`
-
-**Date Filtering:** Add `date:today` (or week/month/year) to search specific time periods
-Example: `!recall date:today jordan` or `!r date:week project discussion`
+    **Date Filtering:** Add `date:today` (or week/month/year) to search specific time periods
+    Example: `!recall date:today jordan` or `!r date:week project discussion`
 
 **!stats / !s** - Show bot statistics (messages stored, questions asked)
 
 **!history / !hist** - Show your message history (total count and recent messages)
 
 **!clear / !c** - Clear your own history (ask history and chat messages)
-**Date Filtering:** Add `date:today` (or week/month/year) to clear specific time periods
-Example: `!clear date:today` or `!c date:week`
+    **Date Filtering:** Add `date:today` (or week/month/year) to clear specific time periods
+    Example: `!clear date:today` or `!c date:week`
 
 **!help / !h** - Show this help message
 
