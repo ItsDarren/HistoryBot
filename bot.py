@@ -23,6 +23,7 @@ DB_FILE = "data/message_store.db"
 EMBEDDING_MODEL = "text-embedding-ada-002"
 CHAT_MODEL = "gpt-3.5-turbo"
 RATE_LIMIT = 3  # commands per minute
+VERSION = "2.1.0"  # Current bot version
 
 class HistoryBot:
     def __init__(self):
@@ -167,6 +168,8 @@ class HistoryBot:
                 await self.handle_history_command(message)
             elif message.content == "!clear" or message.content == "!c":
                 await self.handle_clear_command(message)
+            elif message.content == "!version" or message.content == "!v":
+                await self.handle_version_command(message)
     
     def get_recent_channel_messages(self, channel_id: str, limit: int = 10) -> list:
         """Fetch recent messages from a channel for context"""
@@ -474,6 +477,8 @@ Example: `!recall when we talked about genshin impact` or `!r when we talked abo
     **Date Filtering:** Add `date:today` (or week/month/year) to clear specific time periods
     Example: `!clear date:today` or `!c date:week`
 
+**!version / !v** - Show the current bot version
+
 **!help / !h** - Show this help message
 
 💾 **Features:**
@@ -485,6 +490,37 @@ Example: `!recall when we talked about genshin impact` or `!r when we talked abo
 - Date filtering for targeted searches and history clearing
         """
         await message.channel.send(help_text)
+    
+    async def handle_version_command(self, message: discord.Message):
+        """Handle !version command"""
+        version_info = f"""
+🤖 **HistoryBot v{VERSION}**
+
+📅 **Last Updated:** June 22, 2025
+🔧 **Features:**
+• AI-powered message search with strict relevance filtering
+• Natural language conversation recall
+• Context-aware AI responses
+• SQLite database for persistent storage
+• Rate limiting and command aliases
+• Date filtering for targeted searches
+
+💡 **Recent Updates:**
+• Improved search accuracy with stricter AI filtering
+• Fixed datetime deprecation warnings
+• Enhanced message relevance scoring (80+ threshold)
+• Maximum 10 results per search
+• Better error handling and fallback systems
+
+🛠️ **Technical Stack:**
+• Discord.py for bot framework
+• OpenAI GPT-3.5-Turbo for AI responses
+• OpenAI text-embedding-ada-002 for embeddings
+• SQLite for data persistence
+• Railway for deployment
+        """.strip()
+        
+        await message.channel.send(version_info)
     
     def get_stats(self) -> Dict[str, int]:
         """Get bot statistics from the database"""
@@ -642,20 +678,25 @@ Example: `!recall when we talked about genshin impact` or `!r when we talked abo
             
             # Create the prompt for AI analysis
             system_prompt = """You are an AI assistant that helps find relevant messages from a conversation history. 
-            Given a search query and a list of messages, you need to identify which messages are most relevant to the query.
+            Given a search query and a list of messages, you need to identify which messages are MOST relevant to the query.
+            
+            Be VERY STRICT and selective. Only return messages that are HIGHLY relevant to the search query.
             
             For each message, rate its relevance from 0-100 where:
-            - 0-20: Not relevant at all
-            - 21-40: Slightly relevant
-            - 41-60: Somewhat relevant
-            - 61-80: Relevant
-            - 81-100: Highly relevant
+            - 0-40: Not relevant at all
+            - 41-60: Slightly relevant but not what was asked for
+            - 61-80: Somewhat relevant but not specific enough
+            - 81-100: HIGHLY relevant and directly answers the query
             
             Consider:
-            - Direct keyword matches
-            - Semantic similarity
-            - Contextual relevance
-            - Topic alignment
+            - Direct keyword matches (exact words from the query)
+            - Semantic similarity to the specific topic
+            - Contextual relevance to what was actually asked
+            - Topic alignment with the search intent
+            
+            IMPORTANT: Only return messages that are HIGHLY relevant to the search query. 
+            If the query is about a specific topic (like "pancakes"), only return messages that directly mention or discuss that topic.
+            Do not return messages that are only tangentially related or vaguely similar.
             
             Return ONLY a JSON array of objects with 'index' and 'score' fields, sorted by score (highest first).
             Example: [{"index": 5, "score": 95}, {"index": 12, "score": 87}]"""
@@ -664,6 +705,10 @@ Example: `!recall when we talked about genshin impact` or `!r when we talked abo
 
 Messages to analyze:
 {chr(10).join(message_texts)}
+
+IMPORTANT: Only return messages that are HIGHLY relevant to the search query. 
+If the query is about a specific topic (like "pancakes"), only return messages that directly mention or discuss that topic.
+Do not return messages that are only tangentially related or vaguely similar.
 
 Return the most relevant messages as a JSON array:"""
             
@@ -695,7 +740,7 @@ Return the most relevant messages as a JSON array:"""
                 # Convert AI results to message tuples
                 relevant_messages = []
                 for result in results:
-                    if result['index'] < len(messages) and result['score'] >= 60:  # Only include relevant messages
+                    if result['index'] < len(messages) and result['score'] >= 80:  # Only include highly relevant messages
                         relevant_messages.append((result['score'] / 100.0, messages[result['index']]))
                 
                 # Limit to maximum 10 results from AI
