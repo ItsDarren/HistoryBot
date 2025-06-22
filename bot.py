@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any
 import sqlite3
 from collections import defaultdict
- 
+
 # Load API keys from environment variables
 discord_token = os.getenv("DISCORD_TOKEN")
 openai.api_key = os.getenv("OPENAI_API_KEY")
