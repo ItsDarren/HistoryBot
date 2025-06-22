@@ -22,7 +22,6 @@ if not openai.api_key:
 DB_FILE = "data/message_store.db"
 EMBEDDING_MODEL = "text-embedding-ada-002"
 CHAT_MODEL = "gpt-3.5-turbo"
-RECALL_SIMILARITY_THRESHOLD = 0.85
 RATE_LIMIT = 3  # commands per minute
 
 class HistoryBot:
@@ -95,28 +94,6 @@ class HistoryBot:
         
         return dot_product / (norm1 * norm2)
     
-    def has_query_words(self, query: str, content: str) -> bool:
-        """Check if any significant words from the query are present in the content"""
-        # Convert to lowercase for comparison
-        query_lower = query.lower()
-        content_lower = content.lower()
-        
-        # Split into words and filter out common stop words
-        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'can', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them', 'my', 'your', 'his', 'her', 'its', 'our', 'their', 'mine', 'yours', 'his', 'hers', 'ours', 'theirs'}
-        
-        query_words = [word for word in query_lower.split() if word not in stop_words and len(word) > 2]
-        
-        # If no significant words, return True (fallback to embedding similarity)
-        if not query_words:
-            return True
-        
-        # Check if any significant query words are in the content
-        for word in query_words:
-            if word in content_lower:
-                return True
-        
-        return False
-    
     def store_message(self, message: discord.Message):
         """Store message with embedding in SQLite"""
         try:
@@ -149,76 +126,6 @@ class HistoryBot:
 
         except Exception as e:
             print(f"Error storing message: {e}")
-    
-    def search_messages(self, query: str, date_filter: str = None) -> List[tuple]:
-        """Search messages using semantic similarity and a fixed threshold. Returns (similarity_score, message) tuples."""
-        try:
-            query_embedding = self.get_embedding(query)
-            if not query_embedding:
-                return []
-
-            c = self.db.cursor()
-            
-            # Build the SQL query with optional date filtering
-            sql_query = 'SELECT * FROM messages'
-            params = []
-            
-            if date_filter:
-                now = datetime.utcnow()
-                if date_filter == "today":
-                    start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                elif date_filter == "week":
-                    start_date = now - timedelta(days=7)
-                elif date_filter == "month":
-                    start_date = now - timedelta(days=30)
-                elif date_filter == "year":
-                    start_date = now - timedelta(days=365)
-                else:
-                    # Invalid date filter, ignore it
-                    date_filter = None
-                
-                if date_filter:
-                    sql_query += ' WHERE timestamp >= ?'
-                    params.append(start_date.isoformat())
-            
-            c.execute(sql_query, params)
-            all_msgs = c.fetchall()
-
-            similarities = []
-            for row in all_msgs:
-                msg = {
-                    "id": row[0],
-                    "content": row[1],
-                    "author": row[2],
-                    "author_id": row[3],
-                    "channel": row[4],
-                    "channel_id": row[5],
-                    "guild": row[6],
-                    "guild_id": row[7],
-                    "timestamp": row[8],
-                    "embedding": json.loads(row[9])
-                }
-                similarity = self.cosine_similarity(query_embedding, msg["embedding"])
-                similarities.append((similarity, msg))
-
-            # Sort by similarity (highest first)
-            similarities.sort(key=lambda x: x[0], reverse=True)
-
-            # Only return results with similarity above the threshold, limited to top 10
-            filtered = [(sim, msg) for sim, msg in similarities if sim >= RECALL_SIMILARITY_THRESHOLD]
-            
-            # Additional filter: check if query words are present in the content
-            word_filtered = [(sim, msg) for sim, msg in filtered if self.has_query_words(query, msg["content"])]
-            
-            # If word filtering removes all results, fall back to just similarity filtering
-            if not word_filtered and filtered:
-                return filtered[:10]
-            
-            return word_filtered[:10]  # Limit to maximum 10 results
-
-        except Exception as e:
-            print(f"Error searching messages: {e}")
-            return []
     
     def format_message_for_display(self, msg: Dict[str, Any], confidence: int = None) -> str:
         """Format a stored message for display with clear MM/DD/YYYY date, 12-hour time with AM/PM, and @username."""
@@ -424,7 +331,7 @@ class HistoryBot:
 
             if not results:
                 date_info = f" from {date_filter}" if date_filter else ""
-                await message.channel.send(f"No relevant messages found{date_info} (similarity threshold: {RECALL_SIMILARITY_THRESHOLD}).")
+                await message.channel.send(f"No relevant messages found{date_info}.")
                 return
 
             # Format and send results with similarity scores
@@ -791,7 +698,8 @@ Return the most relevant messages as a JSON array:"""
                     if result['index'] < len(messages) and result['score'] >= 60:  # Only include relevant messages
                         relevant_messages.append((result['score'] / 100.0, messages[result['index']]))
                 
-                return relevant_messages
+                # Limit to maximum 10 results from AI
+                return relevant_messages[:10]
                 
             except (json.JSONDecodeError, KeyError, IndexError) as e:
                 print(f"Error parsing AI response: {e}")
@@ -813,7 +721,7 @@ Return the most relevant messages as a JSON array:"""
             similarities = []
             for msg in messages:
                 similarity = self.cosine_similarity(query_embedding, msg["embedding"])
-                if similarity >= RECALL_SIMILARITY_THRESHOLD:
+                if similarity >= 0.8:  # Use a reasonable threshold for fallback
                     similarities.append((similarity, msg))
             
             # Sort by similarity and limit to 10
