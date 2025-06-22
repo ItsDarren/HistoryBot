@@ -3,7 +3,7 @@ import json
 import discord
 import openai
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from typing import List, Dict, Any
 import sqlite3
 from collections import defaultdict
@@ -199,12 +199,12 @@ class HistoryBot:
         c.execute('''
             INSERT INTO ask_history (user_id, question, answer, timestamp)
             VALUES (?, ?, ?, ?)
-        ''', (user_id, question, answer, datetime.utcnow().isoformat()))
+        ''', (user_id, question, answer, datetime.now(UTC).isoformat()))
         self.db.commit()
 
     def is_user_rate_limited(self, user_id: str) -> bool:
         """Check if user is rate limited (more than 3 commands per minute)"""
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         user_commands = self.command_cooldowns[user_id]
         
         # Remove commands older than 1 minute
@@ -216,7 +216,7 @@ class HistoryBot:
 
     def add_user_command(self, user_id: str):
         """Add a new command timestamp for rate limiting"""
-        self.command_cooldowns[user_id].append(datetime.utcnow())
+        self.command_cooldowns[user_id].append(datetime.now(UTC))
 
     async def handle_ask_command(self, message: discord.Message):
         """Handle !ask command with chat and ask history context"""
@@ -512,7 +512,7 @@ Example: `!recall when we talked about genshin impact` or `!r when we talked abo
         params = [user_id]
         
         if date_filter:
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
             if date_filter == "today":
                 start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
             elif date_filter == "week":
@@ -580,7 +580,7 @@ Example: `!recall when we talked about genshin impact` or `!r when we talked abo
             params = []
             
             if date_filter:
-                now = datetime.utcnow()
+                now = datetime.now(UTC)
                 if date_filter == "today":
                     start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 elif date_filter == "week":
