@@ -22,7 +22,7 @@ if not openai.api_key:
 DB_FILE = "data/message_store.db"
 EMBEDDING_MODEL = "text-embedding-ada-002"
 CHAT_MODEL = "gpt-3.5-turbo"
-RECALL_SIMILARITY_THRESHOLD = 0.75
+RECALL_SIMILARITY_THRESHOLD = 0.85
 RATE_LIMIT = 3  # commands per minute
 
 class HistoryBot:
@@ -94,6 +94,28 @@ class HistoryBot:
             return 0.0
         
         return dot_product / (norm1 * norm2)
+    
+    def has_query_words(self, query: str, content: str) -> bool:
+        """Check if any significant words from the query are present in the content"""
+        # Convert to lowercase for comparison
+        query_lower = query.lower()
+        content_lower = content.lower()
+        
+        # Split into words and filter out common stop words
+        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'can', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'me', 'him', 'her', 'us', 'them', 'my', 'your', 'his', 'her', 'its', 'our', 'their', 'mine', 'yours', 'his', 'hers', 'ours', 'theirs'}
+        
+        query_words = [word for word in query_lower.split() if word not in stop_words and len(word) > 2]
+        
+        # If no significant words, return True (fallback to embedding similarity)
+        if not query_words:
+            return True
+        
+        # Check if any significant query words are in the content
+        for word in query_words:
+            if word in content_lower:
+                return True
+        
+        return False
     
     def store_message(self, message: discord.Message):
         """Store message with embedding in SQLite"""
@@ -182,9 +204,17 @@ class HistoryBot:
             # Sort by similarity (highest first)
             similarities.sort(key=lambda x: x[0], reverse=True)
 
-            # Only return results with similarity above the threshold
+            # Only return results with similarity above the threshold, limited to top 10
             filtered = [(sim, msg) for sim, msg in similarities if sim >= RECALL_SIMILARITY_THRESHOLD]
-            return filtered
+            
+            # Additional filter: check if query words are present in the content
+            word_filtered = [(sim, msg) for sim, msg in filtered if self.has_query_words(query, msg["content"])]
+            
+            # If word filtering removes all results, fall back to just similarity filtering
+            if not word_filtered and filtered:
+                return filtered[:10]
+            
+            return word_filtered[:10]  # Limit to maximum 10 results
 
         except Exception as e:
             print(f"Error searching messages: {e}")
@@ -389,8 +419,8 @@ class HistoryBot:
 
             # Show typing indicator while searching
             async with message.channel.typing():
-                # Search for relevant messages
-                results = self.search_messages(query, date_filter)
+                # Search for relevant messages using AI
+                results = self.ai_search_messages(query, date_filter)
 
             if not results:
                 date_info = f" from {date_filter}" if date_filter else ""
@@ -632,6 +662,167 @@ Example: `!recall when we talked about genshin impact` or `!r when we talked abo
             "total_messages": total_messages,
             "recent_messages": recent_messages
         }
+    
+    def ai_search_messages(self, query: str, date_filter: str = None) -> List[tuple]:
+        """Search messages using AI to determine relevance. Returns (relevance_score, message) tuples."""
+        try:
+            c = self.db.cursor()
+            
+            # Build the SQL query with optional date filtering
+            sql_query = 'SELECT * FROM messages'
+            params = []
+            
+            if date_filter:
+                now = datetime.utcnow()
+                if date_filter == "today":
+                    start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                elif date_filter == "week":
+                    start_date = now - timedelta(days=7)
+                elif date_filter == "month":
+                    start_date = now - timedelta(days=30)
+                elif date_filter == "year":
+                    start_date = now - timedelta(days=365)
+                else:
+                    # Invalid date filter, ignore it
+                    date_filter = None
+                
+                if date_filter:
+                    sql_query += ' WHERE timestamp >= ?'
+                    params.append(start_date.isoformat())
+            
+            c.execute(sql_query, params)
+            all_msgs = c.fetchall()
+            
+            if not all_msgs:
+                return []
+            
+            # Convert to message objects
+            messages = []
+            for row in all_msgs:
+                msg = {
+                    "id": row[0],
+                    "content": row[1],
+                    "author": row[2],
+                    "author_id": row[3],
+                    "channel": row[4],
+                    "channel_id": row[5],
+                    "guild": row[6],
+                    "guild_id": row[7],
+                    "timestamp": row[8],
+                    "embedding": json.loads(row[9])
+                }
+                messages.append(msg)
+            
+            # Use AI to find relevant messages
+            relevant_messages = self.ai_filter_messages(query, messages)
+            
+            # Limit to top 10 results
+            return relevant_messages[:10]
+            
+        except Exception as e:
+            print(f"Error in AI search: {e}")
+            return []
+    
+    def ai_filter_messages(self, query: str, messages: List[Dict]) -> List[tuple]:
+        """Use AI to filter and rank messages by relevance to the query"""
+        try:
+            # Prepare messages for AI analysis
+            message_texts = []
+            for i, msg in enumerate(messages):
+                timestamp = datetime.fromisoformat(msg["timestamp"]).strftime("%m/%d/%Y %I:%M %p")
+                message_text = f"[{i}] {msg['author']} ({timestamp}): {msg['content']}"
+                message_texts.append(message_text)
+            
+            # Create the prompt for AI analysis
+            system_prompt = """You are an AI assistant that helps find relevant messages from a conversation history. 
+            Given a search query and a list of messages, you need to identify which messages are most relevant to the query.
+            
+            For each message, rate its relevance from 0-100 where:
+            - 0-20: Not relevant at all
+            - 21-40: Slightly relevant
+            - 41-60: Somewhat relevant
+            - 61-80: Relevant
+            - 81-100: Highly relevant
+            
+            Consider:
+            - Direct keyword matches
+            - Semantic similarity
+            - Contextual relevance
+            - Topic alignment
+            
+            Return ONLY a JSON array of objects with 'index' and 'score' fields, sorted by score (highest first).
+            Example: [{"index": 5, "score": 95}, {"index": 12, "score": 87}]"""
+            
+            user_prompt = f"""Search Query: "{query}"
+
+Messages to analyze:
+{chr(10).join(message_texts)}
+
+Return the most relevant messages as a JSON array:"""
+            
+            # Call OpenAI API
+            response = openai.chat.completions.create(
+                model=CHAT_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1  # Low temperature for consistent results
+            )
+            
+            # Parse the AI response
+            ai_response = response.choices[0].message.content.strip()
+            
+            # Extract JSON from response (handle cases where AI adds extra text)
+            try:
+                # Find JSON array in the response
+                start_idx = ai_response.find('[')
+                end_idx = ai_response.rfind(']') + 1
+                if start_idx != -1 and end_idx != -1:
+                    json_str = ai_response[start_idx:end_idx]
+                    results = json.loads(json_str)
+                else:
+                    # Fallback to embedding search
+                    return self.fallback_embedding_search(query, messages)
+                
+                # Convert AI results to message tuples
+                relevant_messages = []
+                for result in results:
+                    if result['index'] < len(messages) and result['score'] >= 60:  # Only include relevant messages
+                        relevant_messages.append((result['score'] / 100.0, messages[result['index']]))
+                
+                return relevant_messages
+                
+            except (json.JSONDecodeError, KeyError, IndexError) as e:
+                print(f"Error parsing AI response: {e}")
+                # Fallback to embedding search
+                return self.fallback_embedding_search(query, messages)
+                
+        except Exception as e:
+            print(f"Error in AI filtering: {e}")
+            # Fallback to embedding search
+            return self.fallback_embedding_search(query, messages)
+    
+    def fallback_embedding_search(self, query: str, messages: List[Dict]) -> List[tuple]:
+        """Fallback to embedding-based search if AI search fails"""
+        try:
+            query_embedding = self.get_embedding(query)
+            if not query_embedding:
+                return []
+            
+            similarities = []
+            for msg in messages:
+                similarity = self.cosine_similarity(query_embedding, msg["embedding"])
+                if similarity >= RECALL_SIMILARITY_THRESHOLD:
+                    similarities.append((similarity, msg))
+            
+            # Sort by similarity and limit to 10
+            similarities.sort(key=lambda x: x[0], reverse=True)
+            return similarities[:10]
+            
+        except Exception as e:
+            print(f"Error in fallback search: {e}")
+            return []
     
     def run(self):
         """Run the bot"""
