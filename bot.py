@@ -2,7 +2,6 @@ import os
 import json
 import discord
 import openai
-import numpy as np
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
 import sqlite3
@@ -20,10 +19,9 @@ if not openai.api_key:
 
 # Constants
 DB_FILE = "data/message_store.db"
-EMBEDDING_MODEL = "text-embedding-ada-002"
 CHAT_MODEL = "gpt-3.5-turbo"
-RECALL_SIMILARITY_THRESHOLD = 0.80
 RATE_LIMIT = 3  # commands per minute
+VERSION = "2.0.0"  # Bot version for tracking updates
 
 class HistoryBot:
     def __init__(self):
@@ -50,8 +48,7 @@ class HistoryBot:
                 channel_id TEXT,
                 guild TEXT,
                 guild_id TEXT,
-                timestamp TEXT,
-                embedding TEXT
+                timestamp TEXT
             )
         ''')
         c.execute('''
@@ -66,50 +63,17 @@ class HistoryBot:
         conn.commit()
         return conn
     
-    def get_embedding(self, text: str) -> List[float]:
-        """Get embedding for text using OpenAI API"""
-        try:
-            response = openai.embeddings.create(
-                model=EMBEDDING_MODEL,
-                input=text
-            )
-            return response.data[0].embedding
-        except Exception as e:
-            print(f"Error getting embedding: {e}")
-            return []
-    
-    def cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
-        """Calculate cosine similarity between two vectors"""
-        if not vec1 or not vec2 or len(vec1) != len(vec2):
-            return 0.0
-        
-        vec1 = np.array(vec1)
-        vec2 = np.array(vec2)
-        
-        dot_product = np.dot(vec1, vec2)
-        norm1 = np.linalg.norm(vec1)
-        norm2 = np.linalg.norm(vec2)
-        
-        if norm1 == 0 or norm2 == 0:
-            return 0.0
-        
-        return dot_product / (norm1 * norm2)
-    
     def store_message(self, message: discord.Message):
-        """Store message with embedding in SQLite"""
+        """Store message in SQLite (no embeddings needed)"""
         try:
             if message.author.bot or not message.content.strip():
-                return
-
-            embedding = self.get_embedding(message.content)
-            if not embedding:
                 return
 
             c = self.db.cursor()
             c.execute('''
                 INSERT OR REPLACE INTO messages (
-                    id, content, author, author_id, channel, channel_id, guild, guild_id, timestamp, embedding
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, content, author, author_id, channel, channel_id, guild, guild_id, timestamp
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 str(message.id),
                 message.content,
@@ -119,8 +83,7 @@ class HistoryBot:
                 str(message.channel.id),
                 message.guild.name if message.guild else "DM",
                 str(message.guild.id) if message.guild else "DM",
-                message.created_at.isoformat(),
-                json.dumps(embedding)
+                message.created_at.isoformat()
             ))
             self.db.commit()
             print(f"Stored message from {message.author.display_name}: {message.content[:50]}...")
@@ -129,10 +92,10 @@ class HistoryBot:
             print(f"Error storing message: {e}")
     
     def ai_search_messages(self, query: str, messages: List[Dict[str, Any]]) -> List[tuple]:
-        """Batch up to 100 messages and use OpenAI to determine relevance."""
+        """Batch up to 200 messages and use OpenAI to determine relevance."""
         try:
-            # Only use the last 100 messages for context
-            recent_messages = messages[-100:]
+            # Use the last 200 messages for context (increased from 100)
+            recent_messages = messages[-200:]
 
             # Build a numbered list of messages for the prompt
             context_parts = []
@@ -146,16 +109,21 @@ You are a helpful assistant that understands natural language queries about chat
 
 Given the user query: "{query}"
 
-Here are some messages:
+Here are some messages from a Discord chat:
 {context}
 
-For each message, respond with a JSON array like:
+For each message, determine if it's relevant to the user's query. Respond with a JSON array like:
 [
-  {{"index": 1, "relevant": true, "confidence": 0.92, "reason": "explains the topic"}},
-  {{"index": 2, "relevant": false, "confidence": 0.10, "reason": "off-topic"}},
+  {{"index": 1, "relevant": true, "confidence": 0.95, "reason": "directly discusses the topic"}},
+  {{"index": 2, "relevant": false, "confidence": 0.05, "reason": "unrelated conversation"}},
   ...
 ]
-Only mark messages as relevant if they are genuinely useful for the query. Use a confidence score between 0 and 1.
+
+Guidelines:
+- Only mark messages as relevant if they genuinely help answer the user's question
+- Use confidence scores between 0 and 1 (higher = more relevant)
+- Consider context, timing, and the actual content relevance
+- Be selective - it's better to return fewer high-quality matches than many weak ones
 '''
 
             response = openai.chat.completions.create(
@@ -233,8 +201,7 @@ Only mark messages as relevant if they are genuinely useful for the query. Use a
                     "channel_id": row[5],
                     "guild": row[6],
                     "guild_id": row[7],
-                    "timestamp": row[8],
-                    # embedding is ignored
+                    "timestamp": row[8]
                 }
                 messages.append(msg)
             relevant_messages = self.ai_search_messages(query, messages)
@@ -277,6 +244,8 @@ Only mark messages as relevant if they are genuinely useful for the query. Use a
                 await self.handle_recall_command(message)
             elif message.content == "!help" or message.content == "!h":
                 await self.handle_help_command(message)
+            elif message.content == "!version" or message.content == "!v":
+                await self.handle_version_command(message)
             elif message.content == "!stats" or message.content == "!s":
                 await self.handle_stats_command(message)
             elif message.content == "!history" or message.content == "!hist":
@@ -447,7 +416,7 @@ Only mark messages as relevant if they are genuinely useful for the query. Use a
 
             if not results:
                 date_info = f" from {date_filter}" if date_filter else ""
-                await message.channel.send(f"No relevant messages found{date_info} (similarity threshold: {RECALL_SIMILARITY_THRESHOLD}).")
+                await message.channel.send(f"No relevant messages found{date_info}.")
                 return
 
             # Format and send results with similarity scores
@@ -590,17 +559,40 @@ Example: `!recall when we talked about genshin impact` or `!r when we talked abo
     **Date Filtering:** Add `date:today` (or week/month/year) to clear specific time periods
     Example: `!clear date:today` or `!c date:week`
 
+**!version / !v** - Show bot version and update information
+
 **!help / !h** - Show this help message
 
 💾 **Features:**
-- Automatically stores all messages with embeddings
-- Natural language search through conversation history
-- Persistent memory across bot restarts (now using SQLite!)
+- Automatically stores all messages
+- AI-powered natural language search through conversation history
+- Persistent memory across bot restarts (using SQLite!)
 - Context-aware AI responses with chat history
 - Command aliases for faster typing
 - Date filtering for targeted searches and history clearing
         """
         await message.channel.send(help_text)
+
+    async def handle_version_command(self, message: discord.Message):
+        """Handle !version command"""
+        version_text = f"""
+🤖 **HistoryBot v{VERSION}**
+
+**Latest Updates:**
+• Switched to 100% OpenAI-powered search (no more embeddings!)
+• Increased search batch size to 200 messages per API call
+• Improved AI relevance detection
+• Removed numpy dependency for cleaner setup
+
+**Technical Details:**
+• Model: {CHAT_MODEL}
+• Database: SQLite
+• Search Method: OpenAI GPT-3.5-Turbo
+• Rate Limit: {RATE_LIMIT} commands/minute
+
+*Use `!help` for command list*
+        """.strip()
+        await message.channel.send(version_text)
     
     def get_stats(self) -> Dict[str, int]:
         """Get bot statistics from the database"""
