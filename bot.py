@@ -128,15 +128,81 @@ class HistoryBot:
         except Exception as e:
             print(f"Error storing message: {e}")
     
+    def ai_search_messages(self, query: str, messages: List[Dict[str, Any]]) -> List[tuple]:
+        """Batch up to 100 messages and use OpenAI to determine relevance."""
+        try:
+            # Only use the last 100 messages for context
+            recent_messages = messages[-100:]
+
+            # Build a numbered list of messages for the prompt
+            context_parts = []
+            for idx, msg in enumerate(recent_messages, 1):
+                timestamp = datetime.fromisoformat(msg["timestamp"]).strftime("%m/%d/%Y %I:%M %p")
+                context_parts.append(f"{idx}. [{timestamp}] @{msg['author']}: {msg['content']}")
+            context = "\n".join(context_parts)
+
+            ai_prompt = f'''
+You are a helpful assistant that understands natural language queries about chat history.
+
+Given the user query: "{query}"
+
+Here are some messages:
+{context}
+
+For each message, respond with a JSON array like:
+[
+  {{"index": 1, "relevant": true, "confidence": 0.92, "reason": "explains the topic"}},
+  {{"index": 2, "relevant": false, "confidence": 0.10, "reason": "off-topic"}},
+  ...
+]
+Only mark messages as relevant if they are genuinely useful for the query. Use a confidence score between 0 and 1.
+'''
+
+            response = openai.chat.completions.create(
+                model=CHAT_MODEL,
+                messages=[{"role": "user", "content": ai_prompt}],
+                temperature=0.1
+            )
+
+            ai_response = response.choices[0].message.content.strip()
+
+            # Parse AI response
+            try:
+                if "```json" in ai_response:
+                    json_start = ai_response.find("```json") + 7
+                    json_end = ai_response.find("```", json_start)
+                    json_str = ai_response[json_start:json_end].strip()
+                elif "```" in ai_response:
+                    json_start = ai_response.find("```") + 3
+                    json_end = ai_response.find("```", json_start)
+                    json_str = ai_response[json_start:json_end].strip()
+                else:
+                    json_str = ai_response
+                ai_results = json.loads(json_str)
+
+                results = []
+                for ai_result in ai_results:
+                    idx = ai_result.get("index")
+                    relevant = ai_result.get("relevant", False)
+                    confidence = ai_result.get("confidence", 0.5)
+                    if relevant and 1 <= idx <= len(recent_messages):
+                        msg = recent_messages[idx - 1]
+                        results.append((confidence, msg))
+                results.sort(key=lambda x: x[0], reverse=True)
+                return results
+            except (json.JSONDecodeError, KeyError) as e:
+                print(f"Error parsing AI response: {e}")
+                return []
+        except Exception as e:
+            print(f"Error in AI search: {e}")
+            return []
+    
     def search_messages(self, query: str, date_filter: str = None) -> List[tuple]:
-        """Search messages using AI-powered understanding of query intent. Returns (confidence_score, message) tuples."""
+        """Search messages using only OpenAI-powered batching relevance."""
         try:
             c = self.db.cursor()
-            
-            # Build the SQL query with optional date filtering
             sql_query = 'SELECT * FROM messages'
             params = []
-            
             if date_filter:
                 now = datetime.utcnow()
                 if date_filter == "today":
@@ -148,20 +214,14 @@ class HistoryBot:
                 elif date_filter == "year":
                     start_date = now - timedelta(days=365)
                 else:
-                    # Invalid date filter, ignore it
                     date_filter = None
-                
                 if date_filter:
                     sql_query += ' WHERE timestamp >= ?'
                     params.append(start_date.isoformat())
-            
             c.execute(sql_query, params)
             all_msgs = c.fetchall()
-
             if not all_msgs:
                 return []
-
-            # Convert to list of message dictionaries
             messages = []
             for row in all_msgs:
                 msg = {
@@ -174,133 +234,13 @@ class HistoryBot:
                     "guild": row[6],
                     "guild_id": row[7],
                     "timestamp": row[8],
-                    "embedding": json.loads(row[9])
+                    # embedding is ignored
                 }
                 messages.append(msg)
-
-            # Use AI to understand the query and find relevant messages
             relevant_messages = self.ai_search_messages(query, messages)
-            
-            # Limit to top 10 results
             return relevant_messages[:10]
-
         except Exception as e:
             print(f"Error searching messages: {e}")
-            return []
-    
-    def ai_search_messages(self, query: str, messages: List[Dict[str, Any]]) -> List[tuple]:
-        """Use AI to understand query intent and find relevant messages"""
-        try:
-            # Create a context of recent messages for the AI to analyze
-            recent_messages = messages[-100:]  # Last 100 messages for context
-            
-            # Build context string
-            context_parts = []
-            for msg in recent_messages:
-                timestamp = datetime.fromisoformat(msg["timestamp"]).strftime("%m/%d/%Y %I:%M %p")
-                context_parts.append(f"[{timestamp}] @{msg['author']}: {msg['content']}")
-            
-            context = "\n".join(context_parts)
-            
-            # Create AI prompt for understanding the query
-            ai_prompt = f"""
-You are a helpful assistant that understands natural language queries about chat history. 
-
-Given this query: "{query}"
-
-And this recent chat history:
-{context}
-
-Please analyze the query and identify what the user is looking for. The query might be asking about:
-- Specific people mentioned (@username)
-- Topics discussed
-- Actions or recommendations given
-- Time-based requests ("latest", "recent", "yesterday")
-- Specific content or items mentioned
-
-Return a JSON array of message IDs that are most relevant to the query, along with a confidence score (0-1) for each. Only include messages that are genuinely relevant.
-
-Format: [{{"message_id": "id", "confidence": 0.95, "reason": "brief explanation"}}]
-
-Focus on semantic meaning and intent, not just exact word matches.
-"""
-
-            # Call OpenAI to understand the query
-            response = openai.chat.completions.create(
-                model=CHAT_MODEL,
-                messages=[{"role": "user", "content": ai_prompt}],
-                temperature=0.1  # Low temperature for consistent results
-            )
-
-            ai_response = response.choices[0].message.content.strip()
-            
-            # Parse AI response
-            try:
-                # Extract JSON from response (handle potential markdown formatting)
-                if "```json" in ai_response:
-                    json_start = ai_response.find("```json") + 7
-                    json_end = ai_response.find("```", json_start)
-                    json_str = ai_response[json_start:json_end].strip()
-                elif "```" in ai_response:
-                    json_start = ai_response.find("```") + 3
-                    json_end = ai_response.find("```", json_start)
-                    json_str = ai_response[json_start:json_end].strip()
-                else:
-                    json_str = ai_response
-                
-                ai_results = json.loads(json_str)
-                
-                # Map AI results back to full messages
-                results = []
-                for ai_result in ai_results:
-                    message_id = ai_result.get("message_id")
-                    confidence = ai_result.get("confidence", 0.5)
-                    
-                    # Find the corresponding message
-                    for msg in messages:
-                        if msg["id"] == message_id:
-                            results.append((confidence, msg))
-                            break
-                
-                # Sort by confidence (highest first)
-                results.sort(key=lambda x: x[0], reverse=True)
-                
-                # Filter by minimum confidence threshold
-                filtered_results = [(conf, msg) for conf, msg in results if conf >= RECALL_SIMILARITY_THRESHOLD]
-                
-                return filtered_results
-                
-            except (json.JSONDecodeError, KeyError) as e:
-                print(f"Error parsing AI response: {e}")
-                # Fallback to embedding-based search
-                return self.fallback_embedding_search(query, messages)
-                
-        except Exception as e:
-            print(f"Error in AI search: {e}")
-            # Fallback to embedding-based search
-            return self.fallback_embedding_search(query, messages)
-    
-    def fallback_embedding_search(self, query: str, messages: List[Dict[str, Any]]) -> List[tuple]:
-        """Fallback to embedding-based search if AI search fails"""
-        try:
-            query_embedding = self.get_embedding(query)
-            if not query_embedding:
-                return []
-
-            similarities = []
-            for msg in messages:
-                similarity = self.cosine_similarity(query_embedding, msg["embedding"])
-                similarities.append((similarity, msg))
-
-            # Sort by similarity (highest first)
-            similarities.sort(key=lambda x: x[0], reverse=True)
-
-            # Only return results with similarity above the threshold
-            filtered = [(sim, msg) for sim, msg in similarities if sim >= RECALL_SIMILARITY_THRESHOLD]
-            return filtered
-
-        except Exception as e:
-            print(f"Error in fallback search: {e}")
             return []
     
     def format_message_for_display(self, msg: Dict[str, Any], confidence: int = None) -> str:
